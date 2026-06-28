@@ -1,0 +1,407 @@
+diff --git a/addons/resource.language.en_gb/resources/strings.po b/addons/resource.language.en_gb/resources/strings.po
+index 5bf71397d0..7bec308f2a 100644
+--- a/addons/resource.language.en_gb/resources/strings.po
++++ b/addons/resource.language.en_gb/resources/strings.po
+@@ -9091,6 +9091,16 @@ msgctxt "#14427"
+ msgid "Player-Led"
+ msgstr ""
+ 
++#: system/settings/settings.xml
++msgctxt "#14428"
++msgid "Use experimental real-vsync playback clock"
++msgstr ""
++
++#: system/settings/settings.xml
++msgctxt "#14429"
++msgid "Drive the Amlogic playback reference clock from real HDMI vsync timestamps instead of codec events. This can improve frame pacing at fractional refresh rates. The legacy clock is used automatically if the ioctl is unavailable. Experimental; requires a Kodi restart."
++msgstr ""
++
+ #: xbmc/music/MusicDatabase.cpp
+ #: xbmc/video/VideoDatabase.cpp
+ msgctxt "#15011"
+diff --git a/system/settings/settings.xml b/system/settings/settings.xml
+index ec23bc6b03..c33edcda20 100755
+--- a/system/settings/settings.xml
++++ b/system/settings/settings.xml
+@@ -3958,6 +3958,12 @@
+             <dependency type="enable" setting="coreelec.amlogic.disabledolbyvision" operator="is">false</dependency>
+           </dependencies>
+         </setting>
++        <setting id="coreelec.amlogic.realvsync" type="boolean" label="14428" help="14429">
++          <requirement>HAVE_AMCODEC</requirement>
++          <level>2</level>
++          <default>false</default>
++          <control type="toggle" />
++        </setting>
+         <setting id="coreelec.amlogic.disabledolbyvision" type="boolean" label="14422" help="14423">
+           <requirement>HAVE_AMCODEC</requirement>
+           <default>false</default>
+diff --git a/xbmc/cores/VideoPlayer/VideoReferenceClock.cpp b/xbmc/cores/VideoPlayer/VideoReferenceClock.cpp
+index 30d3233adf..9bbdb7ca9e 100644
+--- a/xbmc/cores/VideoPlayer/VideoReferenceClock.cpp
++++ b/xbmc/cores/VideoPlayer/VideoReferenceClock.cpp
+@@ -10,7 +10,6 @@
+ #include "ServiceBroker.h"
+ #include "settings/Settings.h"
+ #include "settings/SettingsComponent.h"
+-#include "utils/MathUtils.h"
+ #include "utils/TimeUtils.h"
+ #include "utils/log.h"
+ #include "windowing/GraphicContext.h"
+@@ -46,7 +45,11 @@ CVideoReferenceClock::~CVideoReferenceClock()
+ 
+ void CVideoReferenceClock::Start()
+ {
+-  if(CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK) && !IsRunning())
++  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
++  if (settings &&
++      (settings->GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK) ||
++       settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_REALVSYNC)) &&
++      !IsRunning())
+     Create();
+ }
+ 
+@@ -129,14 +132,25 @@ void CVideoReferenceClock::UpdateClockInternal(int NrVBlanks, bool CheckMissed)
+           "CVideoReferenceClock: detected {} vblanks, missed {}, refreshrate might have changed",
+           NrVBlanks, m_MissedVblanks);
+ 
++    const int reportedVblanks = NrVBlanks;
++    const int synthesizedVblanks = m_MissedVblanks;
+     NrVBlanks -= m_MissedVblanks; //subtract the vblanks we missed
+     m_MissedVblanks = 0;
++
++    if (NrVBlanks <= 0 && synthesizedVblanks > 0)
++    {
++      CLog::Log(LOGDEBUG,
++                "CVideoReferenceClock: real update skipped "
++                "(reported={}, synthesized={}, remaining={})",
++                reportedVblanks, synthesizedVblanks, NrVBlanks);
++    }
+   }
+   else
+   {
+     m_MissedVblanks += NrVBlanks;      //tell the vblank clock how many vblanks it missed
+     m_TotalMissedVblanks += NrVBlanks; //for the codec information screen
+-    m_VblankTime += m_SystemFrequency * static_cast<int64_t>(NrVBlanks) / MathUtils::round_int(m_RefreshRate); //set the vblank time forward
++    m_VblankTime += static_cast<int64_t>(
++        static_cast<double>(m_SystemFrequency) / m_RefreshRate * NrVBlanks);
+   }
+ 
+   if (NrVBlanks > 0) //update the clock with the adjusted frequency if we have any vblanks
+@@ -172,10 +186,22 @@ int64_t CVideoReferenceClock::GetTime(bool interpolated /* = true*/)
+     Now = CurrentHostCounter();        //get current system time
+     NextVblank = TimeOfNextVblank();   //get time when the next vblank should happen
+ 
++    int synthesized = 0;
++    const int64_t staleUs =
++        Now > m_VblankTime ? (Now - m_VblankTime) * 1'000'000 / m_SystemFrequency : 0;
+     while(Now >= NextVblank)  //keep looping until the next vblank is in the future
+     {
+       UpdateClockInternal(1, false); //update clock when next vblank should have happened already
+       NextVblank = TimeOfNextVblank(); //get time when the next vblank should happen
++      ++synthesized;
++    }
++
++    if (synthesized > 1)
++    {
++      CLog::Log(LOGDEBUG,
++                "CVideoReferenceClock: synthesized {} vblanks "
++                "(staleUs={}, missed={}, totalMissed={})",
++                synthesized, staleUs, m_MissedVblanks, m_TotalMissedVblanks);
+     }
+ 
+     if (interpolated)
+@@ -259,7 +285,9 @@ double CVideoReferenceClock::GetRefreshRate(double* interval /*= NULL*/)
+ //increase that by 30% to allow for errors
+ int64_t CVideoReferenceClock::TimeOfNextVblank() const
+ {
+-  return m_VblankTime + (m_SystemFrequency / MathUtils::round_int(m_RefreshRate) * MAXVBLANKDELAY / 10LL);
++  return m_VblankTime + static_cast<int64_t>(
++                            static_cast<double>(m_SystemFrequency) / m_RefreshRate *
++                            MAXVBLANKDELAY / 10.0);
+ }
+ 
+ //for the codec information screen
+diff --git a/xbmc/cores/VideoPlayer/VideoReferenceClock.h b/xbmc/cores/VideoPlayer/VideoReferenceClock.h
+index bbf4c9b134..610be19486 100644
+--- a/xbmc/cores/VideoPlayer/VideoReferenceClock.h
++++ b/xbmc/cores/VideoPlayer/VideoReferenceClock.h
+@@ -29,11 +29,11 @@ class CVideoReferenceClock : CThread
+     bool    GetClockInfo(int& MissedVblanks, double& ClockSpeed, double& RefreshRate) const;
+ 
+     void UpdateClock(int NrVBlanks, uint64_t time);
++    void UpdateRefreshrate();
+ 
+   private:
+     void    Process() override;
+     void Start();
+-    void    UpdateRefreshrate();
+     void UpdateClockInternal(int NrVBlanks, bool CheckMissed);
+     double  UpdateInterval() const;
+     int64_t TimeOfNextVblank() const;
+diff --git a/xbmc/settings/Settings.h b/xbmc/settings/Settings.h
+index 1485a0b777..9087cc3fa1 100644
+--- a/xbmc/settings/Settings.h
++++ b/xbmc/settings/Settings.h
+@@ -464,6 +464,7 @@ public:
+   static constexpr auto SETTING_COREELEC_AMLOGIC_LIMIT_CD = "coreelec.amlogic.limitcd";
+   static constexpr auto SETTING_COREELEC_AMLOGIC_FORCE_CS = "coreelec.amlogic.forcecs";
+   static constexpr auto SETTING_COREELEC_AMLOGIC_DISABLEGUISCALING = "coreelec.amlogic.disableguiscaling";
++  static constexpr auto SETTING_COREELEC_AMLOGIC_REALVSYNC = "coreelec.amlogic.realvsync";
+   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_DISABLE = "coreelec.amlogic.disabledolbyvision";
+   static constexpr auto SETTING_COREELEC_AMLOGIC_DV_LED = "coreelec.amlogic.dolbyvisionled";
+   static constexpr auto SETTING_CACHE_HARDDISK = "cache.harddisk";
+diff --git a/xbmc/windowing/amlogic/VideoSyncAML.cpp b/xbmc/windowing/amlogic/VideoSyncAML.cpp
+index ecba7291cc..d76407c1d8 100644
+--- a/xbmc/windowing/amlogic/VideoSyncAML.cpp
++++ b/xbmc/windowing/amlogic/VideoSyncAML.cpp
+@@ -8,16 +8,29 @@
+ 
+ #include "VideoSyncAML.h"
+ #include "ServiceBroker.h"
+-#include "windowing/GraphicContext.h"
+ #include "cores/VideoPlayer/VideoReferenceClock.h"
++#include "settings/Settings.h"
++#include "settings/SettingsComponent.h"
++#include "threads/Thread.h"
+ #include "utils/TimeUtils.h"
+ #include "utils/log.h"
+-#include "threads/Thread.h"
++#include "windowing/GraphicContext.h"
+ #include "windowing/WinSystem.h"
+-#include <sys/poll.h>
+ 
++#include <algorithm>
++#include <cerrno>
+ #include <chrono>
++#include <cstring>
++#include <fcntl.h>
++#include <sys/ioctl.h>
++#include <sys/poll.h>
+ #include <thread>
++#include <unistd.h>
++
++// Amlogic OSD-fb ioctl: blocks until the next vsync and returns an s64 ktime timestamp.
++#ifndef FBIO_WAITFORVSYNC_64
++#define FBIO_WAITFORVSYNC_64 _IOW('F', 0x21, unsigned int)
++#endif
+ 
+ extern CEvent g_aml_sync_event;
+ 
+@@ -34,51 +47,178 @@ CVideoSyncAML::~CVideoSyncAML()
+ bool CVideoSyncAML::Setup()
+ {
+   m_abort = false;
++  m_lastKernelTs = 0;
++
++  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
++  m_useRealVsync =
++      settings && settings->GetBool(CSettings::SETTING_COREELEC_AMLOGIC_REALVSYNC);
+ 
+   CServiceBroker::GetWinSystem()->Register(this);
+   CLog::Log(LOGDEBUG, "CVideoReferenceClock: setting up AML");
+ 
++  if (m_useRealVsync)
++  {
++    m_fbFd = open("/dev/fb0", O_RDWR | O_CLOEXEC);
++    if (m_fbFd < 0)
++    {
++      CLog::Log(LOGINFO,
++                "CVideoReferenceClock: unable to open /dev/fb0 for real vsync ({}), "
++                "falling back to the legacy codec event",
++                strerror(errno));
++    }
++    else
++    {
++      CLog::Log(LOGINFO,
++                "CVideoReferenceClock: experimental real-vsync clock enabled "
++                "(FBIO_WAITFORVSYNC_64 on /dev/fb0)");
++    }
++  }
++
+   return true;
+ }
+ 
+ void CVideoSyncAML::Run(CEvent& stopEvent)
+ {
+-  // We use the wall clock for timeout handling (no AML h/w, startup)
+-  std::chrono::time_point<std::chrono::system_clock> now(std::chrono::system_clock::now());
+-  unsigned int waittime (3000 / m_fps);
+-  uint64_t numVBlanks (0);
++  // The legacy fallback uses a monotonic clock and double-precision intervals so fractional
++  // refresh rates do not get rounded to integer milliseconds.
++  auto startTs = std::chrono::steady_clock::now();
++  uint64_t numVBlanks = 0;
++
++  double lastFps = 0.0;
++  double frameIntervalUs = 1'000'000.0 / 60.0;
++  int64_t expectedIntervalNs = static_cast<int64_t>(1'000'000'000.0 / 60.0);
++  auto legacyTimeout = std::chrono::microseconds(
++      static_cast<int64_t>(std::max(8000.0, 3.0 * frameIntervalUs)));
+ 
+   /* This shouldn't be very busy and timing is important so increase priority */
+   CThread::GetCurrentThread()->SetPriority(ThreadPriority::ABOVE_NORMAL);
+ 
+   while (!stopEvent.Signaled() && !m_abort)
+   {
+-    int countVSyncs(1);
+-    if( !g_aml_sync_event.Wait(std::chrono::milliseconds(waittime)))
++    // Display mode switches do not always recreate this thread. Refresh the rate in-place and
++    // reset both timestamp baselines when the active HDMI mode changes.
++    const double currentFps =
++        static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS());
++    if (currentFps > 1.0 && currentFps != lastFps)
+     {
+-      std::chrono::milliseconds elapsed(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - now).count());
+-      uint64_t curVBlanks = (m_fps * elapsed.count()) / 1000;
+-      int64_t lastVBlankTime((curVBlanks * 1000) / m_fps);
+-      if (elapsed.count() > lastVBlankTime)
++      frameIntervalUs = 1'000'000.0 / currentFps;
++      expectedIntervalNs = static_cast<int64_t>(1'000'000'000.0 / currentFps);
++      legacyTimeout = std::chrono::microseconds(
++          static_cast<int64_t>(std::max(8000.0, 3.0 * frameIntervalUs)));
++      startTs = std::chrono::steady_clock::now();
++      numVBlanks = 0;
++      m_lastKernelTs = 0;
++
++      if (lastFps > 0.0)
+       {
+-        lastVBlankTime = (++curVBlanks * 1000) / m_fps;
+-        std::this_thread::sleep_for(std::chrono::milliseconds(lastVBlankTime - elapsed.count()));
++        CLog::Log(LOGDEBUG,
++                  "CVideoSyncAML: refresh rate changed {:.3f} -> {:.3f}, resetting clock",
++                  lastFps, currentFps);
++        m_refClock->UpdateRefreshrate();
++      }
++      lastFps = currentFps;
++    }
++
++    if (m_useRealVsync && m_fbFd >= 0)
++    {
++      int64_t kernelTs = 0;
++      if (ioctl(m_fbFd, FBIO_WAITFORVSYNC_64, &kernelTs) == 0)
++      {
++        if (kernelTs > 0 && kernelTs != m_lastKernelTs)
++        {
++          int countVSyncs = 1;
++          int64_t deltaNs = 0;
++
++          if (m_lastKernelTs > 0 && expectedIntervalNs > 0)
++          {
++            deltaNs = kernelTs - m_lastKernelTs;
++            countVSyncs = static_cast<int>(
++                (deltaNs + expectedIntervalNs / 2) / expectedIntervalNs);
++            countVSyncs = std::max(1, countVSyncs);
++          }
++
++          if (countVSyncs > 1)
++          {
++            CLog::Log(LOGDEBUG,
++                      "CVideoSyncAML: caught up {} vsyncs (deltaNs={}, expectedNs={})",
++                      countVSyncs, deltaNs, expectedIntervalNs);
++          }
++
++          m_lastKernelTs = kernelTs;
++          numVBlanks += static_cast<uint64_t>(countVSyncs);
++          m_refClock->UpdateClock(countVSyncs, CurrentHostCounter());
++          continue;
++        }
++
++        if (kernelTs == 0)
++          CLog::Log(LOGDEBUG, "CVideoSyncAML: ioctl returned ts=0, using legacy fallback");
++        else
++          CLog::Log(LOGDEBUG, "CVideoSyncAML: ioctl timestamp did not advance, using fallback");
++      }
++      else
++      {
++        if (errno == EINTR)
++          continue;
++
++        if (errno == ENOTTY || errno == EINVAL)
++        {
++          CLog::Log(LOGINFO,
++                    "CVideoReferenceClock: FBIO_WAITFORVSYNC_64 unsupported ({}), "
++                    "permanently using the legacy codec event",
++                    strerror(errno));
++          close(m_fbFd);
++          m_fbFd = -1;
++        }
++      }
++
++      // Never calculate a catch-up delta across an HDMI/VPP blackout. The legacy path below
++      // advances the clock during the gap and the first restored kernel timestamp is a new anchor.
++      m_lastKernelTs = 0;
++    }
++
++    int countVSyncs = 1;
++    if (!g_aml_sync_event.Wait(legacyTimeout))
++    {
++      const auto elapsed = std::chrono::steady_clock::now() - startTs;
++      const double elapsedUs = std::chrono::duration<double, std::micro>(elapsed).count();
++      uint64_t currentVBlanks = static_cast<uint64_t>(elapsedUs / frameIntervalUs);
++
++      const double nextBoundaryUs = (currentVBlanks + 1) * frameIntervalUs;
++      if (nextBoundaryUs > elapsedUs)
++      {
++        std::this_thread::sleep_for(
++            std::chrono::microseconds(static_cast<int64_t>(nextBoundaryUs - elapsedUs)));
++        ++currentVBlanks;
++      }
++
++      if (currentVBlanks > numVBlanks)
++      {
++        countVSyncs = static_cast<int>(currentVBlanks - numVBlanks);
++        numVBlanks = currentVBlanks;
++      }
++      else
++      {
++        countVSyncs = 0;
+       }
+-      countVSyncs = curVBlanks - numVBlanks;
+-      numVBlanks = curVBlanks;
+     }
+     else
++    {
+       ++numVBlanks;
++    }
+ 
+-    uint64_t now = CurrentHostCounter();
+-
+-    m_refClock->UpdateClock(countVSyncs, now);
++    if (countVSyncs > 0)
++      m_refClock->UpdateClock(countVSyncs, CurrentHostCounter());
+   }
+ }
+ 
+ void CVideoSyncAML::Cleanup()
+ {
+   CLog::Log(LOGDEBUG, "CVideoReferenceClock: cleaning up AML");
++  if (m_fbFd >= 0)
++  {
++    close(m_fbFd);
++    m_fbFd = -1;
++  }
+   CServiceBroker::GetWinSystem()->Unregister(this);
+ }
+ 
+diff --git a/xbmc/windowing/amlogic/VideoSyncAML.h b/xbmc/windowing/amlogic/VideoSyncAML.h
+index 55b23d9927..14fc0f9373 100644
+--- a/xbmc/windowing/amlogic/VideoSyncAML.h
++++ b/xbmc/windowing/amlogic/VideoSyncAML.h
+@@ -11,6 +11,8 @@
+ #include "windowing/VideoSync.h"
+ #include "guilib/DispResource.h"
+ 
++#include <cstdint>
++
+ class CVideoSyncAML : public CVideoSync, IDispResource
+ {
+ public:
+@@ -23,4 +25,7 @@ public:
+   virtual void OnResetDisplay()override;
+ private:
+   volatile bool m_abort;
++  bool m_useRealVsync{false};
++  int m_fbFd{-1};
++  int64_t m_lastKernelTs{0};
+ };
