@@ -1,0 +1,88 @@
+#!/bin/sh
+
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026-present CoreELEC contributors
+
+PULLDOWN_NODE="/sys/class/videosync/pts_enforce_pull_down"
+KODI_LOG="/storage/.kodi/temp/kodi.log"
+
+read_node()
+{
+  if [ -r "${1}" ]; then
+    echo "===== ${1} ====="
+    cat "${1}"
+  fi
+}
+
+show_status()
+{
+  echo "===== system ====="
+  date
+  uname -a
+
+  read_node "/sys/class/display/mode"
+  read_node "/sys/class/amhdmitx/amhdmitx0/config"
+  read_node "/sys/class/amhdmitx/amhdmitx0/hdmi_hdr_status"
+  read_node "/sys/class/amdolby_vision/src_format"
+  read_node "/sys/class/amdolby_vision/dv_mode"
+  read_node "${PULLDOWN_NODE}"
+  read_node "/sys/module/amvdec_h265/parameters/dynamic_buf_num_margin"
+  read_node "/sys/class/videosync/dump_queue_state"
+  read_node "/sys/class/video/vframe_states"
+
+  if [ -r "${KODI_LOG}" ]; then
+    echo "===== recent frame-pacing log events ====="
+    grep -E "CVideoSyncAML|CVideoReferenceClock|queue.*(empty|under|starv)|decoder.*(empty|under|starv)|skip|repeat" \
+      "${KODI_LOG}" | tail -n 120
+  fi
+}
+
+set_pulldown()
+{
+  if [ ! -e "${PULLDOWN_NODE}" ]; then
+    echo "Missing ${PULLDOWN_NODE}; the videosync driver does not expose the control." >&2
+    exit 1
+  fi
+
+  if [ ! -w "${PULLDOWN_NODE}" ]; then
+    echo "${PULLDOWN_NODE} is not writable; run this command as root." >&2
+    exit 1
+  fi
+
+  echo "${1}" > "${PULLDOWN_NODE}"
+  echo "Runtime-only change; reboot restores the driver default."
+  read_node "${PULLDOWN_NODE}"
+}
+
+usage()
+{
+  cat <<EOF
+Usage: ${0} [status|pulldown-on|pulldown-off]
+
+  status         show DV, display, decoder-margin, queue, and Kodi clock data
+  pulldown-on    enable PTS pulldown enforcement for a runtime A/B test
+  pulldown-off   disable PTS pulldown enforcement for a runtime A/B test
+
+For comparable results, capture status near the end of the same 10-minute
+P5/P8/P7 scene in each clock/pulldown/TruMotion combination.
+EOF
+}
+
+case "${1:-status}" in
+  status)
+    show_status
+    ;;
+  pulldown-on)
+    set_pulldown 1
+    ;;
+  pulldown-off)
+    set_pulldown 0
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac
