@@ -410,6 +410,7 @@ post_makeinstall_target() {
   cp ${PKG_DIR}/scripts/kodi-remote ${INSTALL}/usr/bin
   cp ${PKG_DIR}/scripts/setwakeup.sh ${INSTALL}/usr/bin
   cp ${PKG_DIR}/scripts/pastekodi ${INSTALL}/usr/bin
+  install -m 0755 ${PKG_DIR}/scripts/dv-frame-pacing-diag ${INSTALL}/usr/bin
   ln -sf /usr/bin/pastekodi ${INSTALL}/usr/bin/pastecrash
 
   mkdir -p ${INSTALL}/usr/share/kodi/addons
