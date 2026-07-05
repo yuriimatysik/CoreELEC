@@ -1,0 +1,35 @@
+diff --git a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+index 5328d21..ba7b50a 100644
+--- a/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
++++ b/xbmc/cores/VideoPlayer/VideoRenderers/RenderManager.cpp
+@@ -937,13 +937,24 @@ void CRenderManager::UpdateResolution()
+             user_stereo_mode == RenderStereoMode::UNDEFINED)
+           m_bTriggerUpdateResolution = false;
+ 
+-        if (m_bTriggerUpdateResolution &&
+-          CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF && m_fps > 0.0f)
++        if (m_bTriggerUpdateResolution)
+         {
+-          RESOLUTION res = CResolutionUtils::ChooseBestResolution(
+-              m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
+-          CServiceBroker::GetWinSystem()->GetGfxContext().SetHDRType(m_picture.hdrType);
+-          CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
++          auto& gfxContext = CServiceBroker::GetWinSystem()->GetGfxContext();
++          gfxContext.SetHDRType(m_picture.hdrType);
++
++          RESOLUTION res = gfxContext.GetVideoResolution();
++          if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
++                  CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) !=
++                  ADJUST_REFRESHRATE_OFF &&
++              m_fps > 0.0f)
++          {
++            res = CResolutionUtils::ChooseBestResolution(
++                m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
++          }
++
++          // Re-submit the current resolution when refresh-rate adjustment is disabled. The Amlogic
++          // windowing layer uses the HDR type change to force the required same-mode DV switch.
++          gfxContext.SetVideoResolution(res, false);
+           UpdateLatencyTweak();
+           if (m_pRenderer)
+             m_pRenderer->Update();
