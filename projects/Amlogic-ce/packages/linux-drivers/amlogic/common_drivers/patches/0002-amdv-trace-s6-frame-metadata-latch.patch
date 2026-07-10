@@ -1,0 +1,80 @@
+diff --git a/drivers/media/enhancement/amdolby_vision/amdv.c b/drivers/media/enhancement/amdolby_vision/amdv.c
+index 9667be481..b312f17cb 100644
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -502,5 +502,59 @@ MODULE_PARM_DESC(s6_dv_trace_frames,
+ 	"number of S6 DV display-vsync CRC samples to log");
+ 
++static u32 s6_dv_meta_hash(u32 hash, const void *data, size_t size)
++{
++	const u8 *p = data;
++
++	while (size--) {
++		hash ^= *p++;
++		hash *= 16777619U;
++	}
++
++	return hash;
++}
++
++static void s6_dv_trace_setting(const char *phase, struct vframe_s *vf,
++				const struct m_dovi_setting_s *setting)
++{
++	const struct private_info_s *input;
++	u32 vf_md_hash = 2166136261U;
++	u32 in_md_hash = 2166136261U;
++	u32 in_comp_hash = 2166136261U;
++	u32 core1_hash = 2166136261U;
++
++	if (!READ_ONCE(s6_dv_trace_frames) || !is_aml_s6() ||
++	    !vf || !setting)
++		return;
++
++	input = &setting->input[0];
++	if (vf->src_fmt.md_size)
++		vf_md_hash = s6_dv_meta_hash(vf_md_hash,
++			vf->src_fmt.md_buf, vf->src_fmt.md_size);
++	if (input->in_md && input->in_md_size)
++		in_md_hash = s6_dv_meta_hash(in_md_hash,
++			input->in_md, input->in_md_size);
++	if (input->in_comp && input->in_comp_size)
++		in_comp_hash = s6_dv_meta_hash(in_comp_hash,
++			input->in_comp, input->in_comp_size);
++
++	core1_hash = s6_dv_meta_hash(core1_hash,
++		&setting->core1[0].dm_reg,
++		sizeof(setting->core1[0].dm_reg));
++	core1_hash = s6_dv_meta_hash(core1_hash,
++		&setting->core1[0].comp_reg,
++		sizeof(setting->core1[0].comp_reg));
++	core1_hash = s6_dv_meta_hash(core1_hash,
++		&setting->core1[0].dm_lut,
++		sizeof(setting->core1[0].dm_lut));
++
++	pr_info("DVMETA %s vf=%u pts=%lld dv=%d set=%u "
++		"vfmd=%08x/%u inmd=%08x/%u comp=%08x/%u tbl=%08x\n",
++		phase, vf->frame_index, vf->pts_us64, vf->src_fmt.dv_id,
++		setting_update_count, vf_md_hash, vf->src_fmt.md_size,
++		in_md_hash, input->in_md_size,
++		in_comp_hash, input->in_comp_size, core1_hash);
++}
++
+ static unsigned int debug_dolby_frame = 0xffff;
+ module_param(debug_dolby_frame, uint, 0664);
+ MODULE_PARM_DESC(debug_dolby_frame, "\n debug_dolby_frame\n");
+@@ -11003,6 +11057,7 @@ int amdv_control_path(struct vframe_s *vf, struct vframe_s *vf_2,
+ 
+ 	if (flag >= 0) {
+ 		update_stb_core_setting_flag(flag);
++		s6_dv_trace_setting("gen", vf, &new_m_dovi_setting);
+ 		if (debug_dolby & 2)
+ 			pr_dv_dbg
+ 			("ll_enable=%d,diagnostic=%d,ll_policy=%d\n",
+@@ -13673,6 +13728,7 @@ static int amdolby_vision_process_v2_stb
+ 				 in_size,
+ 				 in_size_2,
+ 				 pps_state);
++			s6_dv_trace_setting("apply", vf, &new_m_dovi_setting);
+ 			memcpy(&m_dovi_setting, &new_m_dovi_setting,
+ 				sizeof(m_dovi_setting));
+ #ifdef REMOVE_OLD_DV_FUNC
