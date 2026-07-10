@@ -1,0 +1,215 @@
+diff --git a/drivers/media/enhancement/amdolby_vision/amdv.c b/drivers/media/enhancement/amdolby_vision/amdv.c
+index 59328c10a..9667be481 100644
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -490,6 +490,17 @@ unsigned int debug_dolby;
+ module_param(debug_dolby, uint, 0664);
+ MODULE_PARM_DESC(debug_dolby, "\n debug_dolby\n");
+ 
++/*
++ * S6 DV pipeline trace. Writing N captures N display-vsync samples, then
++ * automatically stops. It is deliberately separate from certification mode:
++ * certification changes the normal playback path, while this trace only
++ * enables the hardware CRC taps and reads their results.
++ */
++unsigned int s6_dv_trace_frames;
++module_param(s6_dv_trace_frames, uint, 0664);
++MODULE_PARM_DESC(s6_dv_trace_frames,
++	"number of S6 DV display-vsync CRC samples to log");
++
+ static unsigned int debug_dolby_frame = 0xffff;
+ module_param(debug_dolby_frame, uint, 0664);
+ MODULE_PARM_DESC(debug_dolby_frame, "\n debug_dolby_frame\n");
+@@ -11806,10 +11817,147 @@ void enable_tunnel_for_capture(void)
+ 	}
+ }
+ 
++static u32 s6_dv_hash_bytes(u32 hash, const void *data, size_t size)
++{
++	const u8 *p = data;
++
++	while (size--) {
++		hash ^= *p++;
++		hash *= 16777619U;
++	}
++
++	return hash;
++}
++
++static void s6_dv_trace_crc(void)
++{
++	static bool armed;
++	static bool have_previous;
++	static u32 sequence;
++	static u32 previous_crc[4];
++	u32 crc[4];
++	u32 hash_core1 = 2166136261U;
++	u32 hash_core2 = 2166136261U;
++	u32 hash_core3 = 2166136261U;
++	u32 hash_metadata = 2166136261U;
++	u32 metadata_size;
++	u32 src_format;
++	u32 dst_format;
++	u32 ll_enable;
++	u32 remaining = READ_ONCE(s6_dv_trace_frames);
++	char same[5] = "----";
++	size_t i;
++
++	if (!remaining || !is_aml_s6() || !is_amdv_stb_mode() ||
++	    !is_amdv_on()) {
++		if (!remaining) {
++			armed = false;
++			have_previous = false;
++			sequence = 0;
++		}
++		return;
++	}
++
++	/* Arm once and start sampling on the following vsync. */
++	if (!armed) {
++		VSYNC_WR_DV_REG(AMDV_CORE1_CRC_CTRL, 1);
++		VSYNC_WR_DV_REG(AMDV_CORE3_CRC_CTRL, 1);
++		armed = true;
++		have_previous = false;
++		sequence = 0;
++		pr_info("DVTRACE start frames=%u multi=%u mode=%u\n",
++			remaining, multi_dv_mode, dolby_vision_mode);
++		return;
++	}
++
++	crc[0] = READ_VPP_DV_REG(AMDV_CORE1_BL_CRC);
++	crc[1] = READ_VPP_DV_REG(AMDV_CORE1_CSC_OUTPUT_CRC);
++	crc[2] = READ_VPP_DV_REG(AMDV_CORE3_INPUT_CSC_CRC);
++	crc[3] = READ_VPP_DV_REG(AMDV_CORE3_OUTPUT_CSC_CRC);
++
++	if (have_previous) {
++		for (i = 0; i < ARRAY_SIZE(crc); i++)
++			same[i] = crc[i] == previous_crc[i] ? '1' : '0';
++	}
++	memcpy(previous_crc, crc, sizeof(crc));
++	have_previous = true;
++
++	if (multi_dv_mode) {
++		hash_core1 = s6_dv_hash_bytes(hash_core1,
++			&m_dovi_setting.core1[0].dm_reg,
++			sizeof(m_dovi_setting.core1[0].dm_reg));
++		hash_core1 = s6_dv_hash_bytes(hash_core1,
++			&m_dovi_setting.core1[0].comp_reg,
++			sizeof(m_dovi_setting.core1[0].comp_reg));
++		hash_core1 = s6_dv_hash_bytes(hash_core1,
++			&m_dovi_setting.core1[0].dm_lut,
++			sizeof(m_dovi_setting.core1[0].dm_lut));
++		hash_core2 = s6_dv_hash_bytes(hash_core2,
++			&m_dovi_setting.dm_reg2,
++			sizeof(m_dovi_setting.dm_reg2));
++		hash_core2 = s6_dv_hash_bytes(hash_core2,
++			&m_dovi_setting.dm_lut2,
++			sizeof(m_dovi_setting.dm_lut2));
++		hash_core3 = s6_dv_hash_bytes(hash_core3,
++			&m_dovi_setting.dm_reg3,
++			sizeof(m_dovi_setting.dm_reg3));
++		metadata_size = min_t(u32, m_dovi_setting.md_reg3.size,
++			ARRAY_SIZE(m_dovi_setting.md_reg3.raw_metadata));
++		hash_metadata = s6_dv_hash_bytes(hash_metadata,
++			m_dovi_setting.md_reg3.raw_metadata,
++			metadata_size * sizeof(u32));
++		hash_metadata = s6_dv_hash_bytes(hash_metadata,
++			&metadata_size, sizeof(metadata_size));
++		src_format = m_dovi_setting.input[0].src_format;
++		dst_format = m_dovi_setting.dst_format;
++		ll_enable = m_dovi_setting.dovi_ll_enable;
++	} else {
++		hash_core1 = s6_dv_hash_bytes(hash_core1,
++			&dovi_setting.dm_reg1, sizeof(dovi_setting.dm_reg1));
++		hash_core1 = s6_dv_hash_bytes(hash_core1,
++			&dovi_setting.comp_reg, sizeof(dovi_setting.comp_reg));
++		hash_core1 = s6_dv_hash_bytes(hash_core1,
++			&dovi_setting.dm_lut1, sizeof(dovi_setting.dm_lut1));
++		hash_core2 = s6_dv_hash_bytes(hash_core2,
++			&dovi_setting.dm_reg2, sizeof(dovi_setting.dm_reg2));
++		hash_core2 = s6_dv_hash_bytes(hash_core2,
++			&dovi_setting.dm_lut2, sizeof(dovi_setting.dm_lut2));
++		hash_core3 = s6_dv_hash_bytes(hash_core3,
++			&dovi_setting.dm_reg3, sizeof(dovi_setting.dm_reg3));
++		metadata_size = min_t(u32, dovi_setting.md_reg3.size,
++			ARRAY_SIZE(dovi_setting.md_reg3.raw_metadata));
++		hash_metadata = s6_dv_hash_bytes(hash_metadata,
++			dovi_setting.md_reg3.raw_metadata,
++			metadata_size * sizeof(u32));
++		hash_metadata = s6_dv_hash_bytes(hash_metadata,
++			&metadata_size, sizeof(metadata_size));
++		src_format = dovi_setting.src_format;
++		dst_format = dovi_setting.dst_format;
++		ll_enable = dovi_setting.dovi_ll_enable;
++	}
++
++	pr_info("DVTRACE n=%u set=%u src=%u dst=%u ll=%u same=%s "
++		"crc=%08x/%08x/%08x/%08x tbl=%08x/%08x/%08x "
++		"md=%08x path=%08x ctl=%08x/%08x gate=%08x\n",
++		sequence++, setting_update_count, src_format, dst_format,
++		ll_enable, same, crc[0], crc[1], crc[2], crc[3],
++		hash_core1, hash_core2, hash_core3, hash_metadata,
++		READ_VPP_DV_REG(AMDV_PATH_CTRL),
++		READ_VPP_DV_REG(AMDV_CORE1_CRC_CTRL),
++		READ_VPP_DV_REG(AMDV_CORE3_CRC_CTRL),
++		READ_VPP_DV_REG(AMDV_CORE3_CLKGATE_CTRL));
++
++	WRITE_ONCE(s6_dv_trace_frames, remaining - 1);
++	if (remaining == 1)
++		pr_info("DVTRACE stop samples=%u\n", sequence);
++}
++
+ void calculate_crc(void)
+ {
+ 	bool ott_mode = true;
+ 
++	s6_dv_trace_crc();
++
+ 	if (debug_dolby & 0x2000)
+ 		pr_info("setting_update_count %d,crc_read_delay %d,crc_count %d\n",
+ 			setting_update_count, crc_read_delay, crc_count);
+@@ -12065,6 +12213,8 @@ int amdolby_vision_process_v1(struct vframe_s *vf,
+ 	struct vout_device_s *p_vout = NULL;
+ 	static struct vframe_s *last_vf;
+ 
++	s6_dv_trace_crc();
++
+ 	if (recovery_mode && dolby_vision_on) {/*recovery mode*/
+ 		enable_amdv(0);
+ 		amdv_on_in_uboot = 0;
+diff --git a/drivers/media/enhancement/amdolby_vision/amdv.h b/drivers/media/enhancement/amdolby_vision/amdv.h
+index fba386919..a514fef23 100644
+--- a/drivers/media/enhancement/amdolby_vision/amdv.h
++++ b/drivers/media/enhancement/amdolby_vision/amdv.h
+@@ -796,6 +796,7 @@ extern const struct dolby_vision_func_s *p_funcs_m_stb;
+ extern bool force_stb_mode;
+ extern unsigned int debug_dolby;
+ extern unsigned int dolby_vision_flags;
++extern unsigned int s6_dv_trace_frames;
+ extern uint amdv_mask;
+ extern bool dolby_vision_on;
+ extern bool amdv_core1_on;
+diff --git a/drivers/media/enhancement/amdolby_vision/amdv_hw.c b/drivers/media/enhancement/amdolby_vision/amdv_hw.c
+index afc690db7..db80f56b6 100644
+--- a/drivers/media/enhancement/amdolby_vision/amdv_hw.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv_hw.c
+@@ -2141,7 +2141,8 @@ static int dv_core1a_set(u32 dm_count,
+ 	#endif
+ 	set_dovi_setting_update_flag(true);
+ 
+-	if ((dolby_vision_flags & FLAG_CERTIFICATION) &&
++	if (((dolby_vision_flags & FLAG_CERTIFICATION) ||
++	     (is_aml_s6() && READ_ONCE(s6_dv_trace_frames))) &&
+ 	    !(dolby_vision_flags & FLAG_DISABLE_CRC))
+ 		VSYNC_WR_DV_REG(AMDV_CORE1_CRC_CTRL, 1);
+ 
+@@ -3307,7 +3308,8 @@ static int dv_core3_set
+ 
+ 	VSYNC_WR_DV_REG(CORE3_DIAG_CTRL, diag_mode);
+ 
+-	if ((dolby_vision_flags & FLAG_CERTIFICATION) &&
++	if (((dolby_vision_flags & FLAG_CERTIFICATION) ||
++	     (is_aml_s6() && READ_ONCE(s6_dv_trace_frames))) &&
+ 	    !(dolby_vision_flags & FLAG_DISABLE_CRC))
+ 		VSYNC_WR_DV_REG(CORE3_CRC_CTRL, 1);
+ 	/* enable core3 */
