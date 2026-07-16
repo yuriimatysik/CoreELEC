@@ -353,6 +353,24 @@ When disabled it executes the original write path without the experimental MMIO
 readbacks. After a forced write, mismatch checking is deferred for one update so
 that a pre-vsync read cannot be mistaken for a hardware failure.
 
+The existing `/storage/.config/autostart.sh` may still enable the known
+DV-input-to-HDR10 workaround after boot. Stop playback and clear every output
+experiment before judging the rebased upstream baseline:
+
+```sh
+p=/sys/module/aml_media/parameters
+for n in s6_dv_force_hdr10 s6_dv_ll_hdr10_signal \
+	s6_dv_ll_vsif_signal_off s6_dv_core3_transition_only; do
+	[ ! -w "$p/$n" ] || echo 0 > "$p/$n"
+done
+cat /sys/class/amhdmitx/amhdmitx0/vrr_mode
+cat /proc/amhdmitx/hdmi_vrr 2>/dev/null
+```
+
+Reopen true DV once with the Core3 test still off. This is the decisive check
+for the upstream hard-coded-QMS removal. Only if the verified fixed-refresh DV
+baseline still smears should the Core3 A/B below be run.
+
 Record the read-only counters while idle, enable the test, then reopen the same
 true-DV 2160p60 scene:
 
@@ -406,3 +424,40 @@ dmesg | grep -E '3603|36f0|36f1'
 If one handle retains `0x3603` before `0x36f1` with no overflow, a partitioned
 RDMA port is a no-go for this smear. Overflow, premature execution or reversed
 ordering changes that decision to go.
+
+### External LG/QMS evidence (2026-07-17)
+
+No public report was found that exactly matches AM9 Pro/S905X5-J, LG C5 and the
+same DV/HDR moving-pixel smear. The closest independent LG report is a C2 HDMI
+Dolby Vision case where Bluetooth audio made frame metadata visibly lag behind
+moving objects, while the internal webOS player and HDMI HDR10 were clean. DV
+was also clean when Bluetooth was removed, so this proves that an external-HDMI
+DV timing defect can exist in an LG path, but its specific trigger does not
+match this reproduction. See the [LG webOS forum report](https://forum.webostv.developer.lge.com/t/dolby-vision-out-of-sync-through-hdmi-with-bluetooth-audio-connected-to-tv/14291).
+
+The LG C5 panel itself is not known for transition smearing: measured response
+is near-instant, while the expected 24p OLED artefact is discrete stutter rather
+than a moving pixel trail. Real Cinema handles 24p judder from internal and
+external sources. See [RTINGS C5 review](https://www.rtings.com/tv/reviews/lg/c5-oled)
+and [C5 settings](https://www.rtings.com/tv/reviews/lg/c5-oled/settings).
+
+QMS remains a credible explanation for the separate “TruMotion is not working”
+part. LG G5 owners report that TruMotion becomes ineffective for 24p while QMS
+is active, but works for 50/60p. This is forum evidence rather than an LG design
+statement: [AVForums QMS/TruMotion thread](https://www.avforums.com/threads/lg-tv-qms-quickmediaswitching-and-trumotion-with-24p.2552218/).
+HDMI documents QMS as a VRR-based refresh transition mechanism; it explains
+cadence/judder interactions, not target-DV pixel smear by itself: [HDMI QMS](https://www.hdmi.org/spec2sub/quickmediaswitching).
+LG separately documents that ALLM/Game Mode disables TruMotion, but does not say
+that QMS is equivalent to ALLM: [LG support](https://www.lg.com/us/support/help-library/lg-tv-troubleshooting-poor-picture-quailty-on-ps5--20153303206885OLT).
+
+There are current AM9 reports for DV/QMS cadence selection, DV black screens,
+long picture stalls and FEL seek failures, but not this precise smear:
+[24.000 versus 23.976/QMS](https://discourse.coreelec.org/t/fel-amlogic-no-support/58631?page=17),
+[AM9 DV stalls](https://discourse.coreelec.org/t/ugoos-am9-pro-soc-s6-s905x5-j/58183?page=9), and
+[FEL/DV failures](https://discourse.coreelec.org/t/fel-amlogic-no-support/58631?page=16).
+
+The evidence therefore stays split. The new upstream removal of hard-coded QMS
+may fix the perceived interpolation/cadence defect and must be tested first.
+True DV still smearing at a verified fixed 60 Hz would remain a separate S6
+target-DOVI pixel-path defect; it cannot be assigned to the C5 from public
+evidence alone.
