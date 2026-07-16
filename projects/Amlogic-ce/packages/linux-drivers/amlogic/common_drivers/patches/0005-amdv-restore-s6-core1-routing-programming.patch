@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Fri, 17 Jul 2026 02:08:24 +0300
+Subject: [PATCH 5/9] amdv: restore S6 core1 routing programming
+
+
+diff --git a/drivers/media/enhancement/amdolby_vision/amdv_hw.c b/drivers/media/enhancement/amdolby_vision/amdv_hw.c
+index 745550c12..65d9817e4 100644
+--- a/drivers/media/enhancement/amdolby_vision/amdv_hw.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv_hw.c
+@@ -1918,8 +1918,7 @@ static int dv_core1a_set(u32 dm_count,
+ 			start_render = 1;
+ 		}
+ 		if (dv_core1[0].core1_on && !bypass_core1) {
+-			if (is_aml_g12() || is_aml_sc2() || is_aml_s4d() ||
+-				is_aml_tm2_stbmode() || is_aml_s7d() || is_aml_s6()) {
++			if (is_aml_g12()) {
+ 				VSYNC_WR_DV_REG_BITS
+ 					(AMDV_PATH_CTRL,
+ 					 0, 0, 1);
+@@ -2057,6 +2056,8 @@ static int dv_core1a_set(u32 dm_count,
+ 				VSYNC_WR_DV_REG_BITS
+ 					(AMDV_PATH_CTRL,
+ 					 0, 0, 1); /* core1 */
++				if (is_aml_s6())
++					pr_info_once("S6 Core1 full routing sequence enabled\n");
+ 			} else if (is_aml_s5()) {
+ 				VSYNC_WR_DV_REG_BITS
+ 					(VD1_S0_DV_BYPASS_CTRL,

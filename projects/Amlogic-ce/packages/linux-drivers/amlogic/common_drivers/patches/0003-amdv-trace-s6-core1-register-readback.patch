@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Fri, 17 Jul 2026 02:07:45 +0300
+Subject: [PATCH 3/9] amdv: trace S6 core1 register readback
+
+
+diff --git a/drivers/media/enhancement/amdolby_vision/amdv.c b/drivers/media/enhancement/amdolby_vision/amdv.c
+index 0aabeac63..81d05c2ad 100644
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -12025,6 +12025,10 @@ static void s6_dv_trace_crc(void)
+ 	u32 hash_core2 = 2166136261U;
+ 	u32 hash_core3 = 2166136261U;
+ 	u32 hash_metadata = 2166136261U;
++	u32 hash_sw_dm = 2166136261U;
++	u32 hash_hw_dm = 2166136261U;
++	u32 reg_value;
++	u32 el_flag;
+ 	u32 metadata_size;
+ 	u32 src_format;
+ 	u32 dst_format;
+@@ -12077,6 +12081,9 @@ static void s6_dv_trace_crc(void)
+ 		hash_core1 = s6_dv_hash_bytes(hash_core1,
+ 			&m_dovi_setting.core1[0].dm_lut,
+ 			sizeof(m_dovi_setting.core1[0].dm_lut));
++		hash_sw_dm = s6_dv_hash_bytes(hash_sw_dm,
++			&m_dovi_setting.core1[0].dm_reg,
++			sizeof(m_dovi_setting.core1[0].dm_reg));
+ 		hash_core2 = s6_dv_hash_bytes(hash_core2,
+ 			&m_dovi_setting.dm_reg2,
+ 			sizeof(m_dovi_setting.dm_reg2));
+@@ -12096,6 +12103,7 @@ static void s6_dv_trace_crc(void)
+ 		src_format = m_dovi_setting.input[0].src_format;
+ 		dst_format = m_dovi_setting.dst_format;
+ 		ll_enable = m_dovi_setting.dovi_ll_enable;
++		el_flag = m_dovi_setting.input[0].el_flag;
+ 	} else {
+ 		hash_core1 = s6_dv_hash_bytes(hash_core1,
+ 			&dovi_setting.dm_reg1, sizeof(dovi_setting.dm_reg1));
+@@ -12103,6 +12111,9 @@ static void s6_dv_trace_crc(void)
+ 			&dovi_setting.comp_reg, sizeof(dovi_setting.comp_reg));
+ 		hash_core1 = s6_dv_hash_bytes(hash_core1,
+ 			&dovi_setting.dm_lut1, sizeof(dovi_setting.dm_lut1));
++		hash_sw_dm = s6_dv_hash_bytes(hash_sw_dm,
++			&dovi_setting.dm_reg1,
++			sizeof(dovi_setting.dm_reg1));
+ 		hash_core2 = s6_dv_hash_bytes(hash_core2,
+ 			&dovi_setting.dm_reg2, sizeof(dovi_setting.dm_reg2));
+ 		hash_core2 = s6_dv_hash_bytes(hash_core2,
+@@ -12119,15 +12130,30 @@ static void s6_dv_trace_crc(void)
+ 		src_format = dovi_setting.src_format;
+ 		dst_format = dovi_setting.dst_format;
+ 		ll_enable = dovi_setting.dovi_ll_enable;
++		el_flag = dovi_setting.el_flag;
++	}
++
++	/* DM registers are readable; LUT RAM is write-only through the DMA port. */
++	for (i = 0; i < 27; i++) {
++		reg_value = READ_VPP_DV_REG(AMDV_CORE1A_REG_START + 6 + i);
++		hash_hw_dm = s6_dv_hash_bytes(hash_hw_dm,
++			&reg_value, sizeof(reg_value));
+ 	}
+ 
+-	pr_info("DVTRACE n=%u set=%u src=%u dst=%u ll=%u same=%s "
++	pr_info("DVTRACE n=%u set=%u src=%u dst=%u ll=%u el=%u same=%s "
+ 		"crc=%08x/%08x/%08x/%08x tbl=%08x/%08x/%08x "
+-		"md=%08x path=%08x ctl=%08x/%08x gate=%08x\n",
++		"md=%08x dm=%08x/%08x/%u flags=%08x "
++		"path=%08x c1=%08x/%08x/%08x/%08x ctl=%08x/%08x gate=%08x\n",
+ 		sequence++, setting_update_count, src_format, dst_format,
+-		ll_enable, same, crc[0], crc[1], crc[2], crc[3],
++		ll_enable, el_flag, same, crc[0], crc[1], crc[2], crc[3],
+ 		hash_core1, hash_core2, hash_core3, hash_metadata,
++		hash_sw_dm, hash_hw_dm, hash_sw_dm == hash_hw_dm,
++		READ_ONCE(s6_dv_last_apply_flags),
+ 		READ_VPP_DV_REG(AMDV_PATH_CTRL),
++		READ_VPP_DV_REG(AMDV_CORE1A_SWAP_CTRL0),
++		READ_VPP_DV_REG(AMDV_CORE1A_SWAP_CTRL2),
++		READ_VPP_DV_REG(AMDV_CORE1A_SWAP_CTRL5),
++		READ_VPP_DV_REG(AMDV_CORE1A_REG_START + 1),
+ 		READ_VPP_DV_REG(AMDV_CORE1_CRC_CTRL),
+ 		READ_VPP_DV_REG(AMDV_CORE3_CRC_CTRL),
+ 		READ_VPP_DV_REG(AMDV_CORE3_CLKGATE_CTRL));
+diff --git a/drivers/media/enhancement/amdolby_vision/amdv.h b/drivers/media/enhancement/amdolby_vision/amdv.h
+index 779d0ae08..0926bb1d7 100644
+--- a/drivers/media/enhancement/amdolby_vision/amdv.h
++++ b/drivers/media/enhancement/amdolby_vision/amdv.h
+@@ -800,6 +800,7 @@ extern bool force_stb_mode;
+ extern unsigned int debug_dolby;
+ extern unsigned int dolby_vision_flags;
+ extern unsigned int s6_dv_trace_frames;
++extern u32 s6_dv_last_apply_flags;
+ extern uint amdv_mask;
+ extern bool dolby_vision_on;
+ extern bool amdv_core1_on;
+diff --git a/drivers/media/enhancement/amdolby_vision/amdv_hw.c b/drivers/media/enhancement/amdolby_vision/amdv_hw.c
+index db80f56b6..5e300e243 100644
+--- a/drivers/media/enhancement/amdolby_vision/amdv_hw.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv_hw.c
+@@ -111,6 +111,7 @@ u32 force_update_reg;
+ 
+ /* update all core */
+ static u32 stb_core_setting_update_flag = CP_FLAG_CHANGE_ALL;
++u32 s6_dv_last_apply_flags;
+ static unsigned int bypass_core1a_composer;
+ static unsigned int bypass_core1b_composer;
+ static int operate_mode;
+@@ -3573,6 +3574,9 @@ void apply_stb_core_settings(dma_addr_t dma_paddr,
+ 
+ 	stb_core_setting_update_flag |= update_flag_more;
+ 
++	if (is_aml_s6() && READ_ONCE(s6_dv_trace_frames))
++		WRITE_ONCE(s6_dv_last_apply_flags, stb_core_setting_update_flag);
++
+ 	if (is_amdv_stb_mode() &&
+ 	    (dolby_vision_flags & FLAG_CERTIFICATION)) {
+ 		graphics_w[0] = dv_cert_graphic_width;

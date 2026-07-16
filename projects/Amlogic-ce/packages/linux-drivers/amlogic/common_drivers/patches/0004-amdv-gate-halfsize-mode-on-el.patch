@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Fri, 17 Jul 2026 02:08:03 +0300
+Subject: [PATCH 4/9] amdv: gate halfsize mode on EL
+
+
+diff --git a/drivers/media/enhancement/amdolby_vision/amdv_hw.c b/drivers/media/enhancement/amdolby_vision/amdv_hw.c
+index 5e300e243..745550c12 100644
+--- a/drivers/media/enhancement/amdolby_vision/amdv_hw.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv_hw.c
+@@ -1560,7 +1560,8 @@ static int dv_core1a_set(u32 dm_count,
+ 	u32 count;
+ 	u32 bypass_flag = 0;
+ 	int el_enable = !!new_m_dovi_setting.input[0].el_flag;
+-	int el_41_mode = !!new_m_dovi_setting.input[0].el_halfsize_flag;
++	int el_41_mode = el_enable &&
++		!!new_m_dovi_setting.input[0].el_halfsize_flag;
+ 	int composer_enable =
+ 		core1a_enable && el_enable && (amdv_mask & 1);
+ 	int i;
+@@ -2169,7 +2170,8 @@ static int dv_core1b_set(u32 dm_count,
+ 	u32 count;
+ 	u32 bypass_flag = 0;
+ 	int el_enable = !!new_m_dovi_setting.input[0].el_flag;
+-	int el_41_mode = !!new_m_dovi_setting.input[0].el_halfsize_flag;
++	int el_41_mode = el_enable &&
++		!!new_m_dovi_setting.input[0].el_halfsize_flag;
+ 	int composer_enable =
+ 		core1b_enable && el_enable && (amdv_mask & 1);
+ 	int i;

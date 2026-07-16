@@ -1,8 +1,14 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Fri, 17 Jul 2026 02:05:44 +0300
+Subject: [PATCH 1/9] amdv: add S6 pipeline CRC trace
+
+
 diff --git a/drivers/media/enhancement/amdolby_vision/amdv.c b/drivers/media/enhancement/amdolby_vision/amdv.c
-index 59328c10a..9667be481 100644
+index 84d1bd975..53a97e1c6 100644
 --- a/drivers/media/enhancement/amdolby_vision/amdv.c
 +++ b/drivers/media/enhancement/amdolby_vision/amdv.c
-@@ -490,6 +490,17 @@ unsigned int debug_dolby;
+@@ -491,6 +491,17 @@ unsigned int debug_dolby;
  module_param(debug_dolby, uint, 0664);
  MODULE_PARM_DESC(debug_dolby, "\n debug_dolby\n");
  
@@ -20,7 +26,7 @@ index 59328c10a..9667be481 100644
  static unsigned int debug_dolby_frame = 0xffff;
  module_param(debug_dolby_frame, uint, 0664);
  MODULE_PARM_DESC(debug_dolby_frame, "\n debug_dolby_frame\n");
-@@ -11806,10 +11817,147 @@ void enable_tunnel_for_capture(void)
+@@ -11936,10 +11947,147 @@ void enable_tunnel_for_capture(void)
  	}
  }
  
@@ -168,7 +174,7 @@ index 59328c10a..9667be481 100644
  	if (debug_dolby & 0x2000)
  		pr_info("setting_update_count %d,crc_read_delay %d,crc_count %d\n",
  			setting_update_count, crc_read_delay, crc_count);
-@@ -12065,6 +12213,8 @@ int amdolby_vision_process_v1(struct vframe_s *vf,
+@@ -12195,6 +12343,8 @@ int amdolby_vision_process_v1(struct vframe_s *vf,
  	struct vout_device_s *p_vout = NULL;
  	static struct vframe_s *last_vf;
  
@@ -178,10 +184,10 @@ index 59328c10a..9667be481 100644
  		enable_amdv(0);
  		amdv_on_in_uboot = 0;
 diff --git a/drivers/media/enhancement/amdolby_vision/amdv.h b/drivers/media/enhancement/amdolby_vision/amdv.h
-index fba386919..a514fef23 100644
+index b3cdfba9e..779d0ae08 100644
 --- a/drivers/media/enhancement/amdolby_vision/amdv.h
 +++ b/drivers/media/enhancement/amdolby_vision/amdv.h
-@@ -796,6 +796,7 @@ extern const struct dolby_vision_func_s *p_funcs_m_stb;
+@@ -799,6 +799,7 @@ extern const struct dolby_vision_func_s *p_funcs_m_stb;
  extern bool force_stb_mode;
  extern unsigned int debug_dolby;
  extern unsigned int dolby_vision_flags;

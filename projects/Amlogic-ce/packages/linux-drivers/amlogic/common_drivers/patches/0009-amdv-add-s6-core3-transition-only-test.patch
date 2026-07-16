@@ -1,0 +1,153 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Fri, 17 Jul 2026 02:28:34 +0300
+Subject: [PATCH] amdv: add S6 Core3 transition-only test
+
+---
+ .../enhancement/amdolby_vision/amdv_hw.c      | 96 ++++++++++++++++++-
+ 1 file changed, 93 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/media/enhancement/amdolby_vision/amdv_hw.c b/drivers/media/enhancement/amdolby_vision/amdv_hw.c
+index 65d9817e4..db1353777 100644
+--- a/drivers/media/enhancement/amdolby_vision/amdv_hw.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv_hw.c
+@@ -112,6 +112,15 @@ u32 force_update_reg;
+ /* update all core */
+ static u32 stb_core_setting_update_flag = CP_FLAG_CHANGE_ALL;
+ u32 s6_dv_last_apply_flags;
++static bool s6_dv_core3_transition_only;
++static int s6_dv_core3_last_enable[4] = {-1, -1, -1, -1};
++static bool s6_dv_core3_skip_mismatch[4];
++static unsigned int s6_dv_core3_swap_writes;
++static unsigned int s6_dv_core3_swap_skips;
++static unsigned int s6_dv_core3_swap_transitions;
++static unsigned int s6_dv_core3_swap_mismatches;
++static unsigned int s6_dv_core3_swap_readback;
++static unsigned int s6_dv_core3_clkgate_readback;
+ static unsigned int bypass_core1a_composer;
+ static unsigned int bypass_core1b_composer;
+ static int operate_mode;
+@@ -2977,6 +2986,8 @@ static int dv_core3_set
+ 	u32 *last_dm = (u32 *)&dovi_setting.dm_reg3;
+ 	bool reset = false;
+ 	u32 diag_enable = 0;
++	bool s6_core3_transition = false;
++	bool s6_core3_power_on = false;
+ 	bool reset_post_table = false;
+ #ifdef V2_4_3
+ 	const struct vinfo_s *vinfo = get_current_vinfo();
+@@ -3083,6 +3094,11 @@ static int dv_core3_set
+ 		if (dv_core1[0].run_mode_count == 0)
+ 			reset = true;
+ 	}
++	if (is_aml_s6())
++		s6_core3_transition = reset || *mode_changed ||
++			*vsvdb_changed || pps_state ||
++			(last_dolby_vision_ll_policy !=
++			 dolby_vision_ll_policy);
+ 
+ 	if (is_aml_s5())
+ 		VSYNC_WR_DV_REG_BITS(VPU_DOLBY_GATE_CTRL, 1, 9, 1);
+@@ -3209,10 +3225,15 @@ static int dv_core3_set
+ 	if (is_amdv_stb_mode()) {
+ 		if (get_dv_vpu_mem_power_status(VPU_DOLBY_CORE3) ==
+ 			VPU_MEM_POWER_DOWN ||
+-			get_dv_mem_power_flag(VPU_DOLBY_CORE3) ==
+-			VPU_MEM_POWER_DOWN)
++		    get_dv_mem_power_flag(VPU_DOLBY_CORE3) ==
++			VPU_MEM_POWER_DOWN) {
+ 			dv_mem_power_on(VPU_DOLBY_CORE3);
++			if (is_aml_s6())
++				s6_core3_power_on = true;
++		}
+ 	}
++	if (s6_core3_power_on)
++		s6_core3_transition = true;
+ 	/*s6 has clk_gating function, but its logical is unreasonable, lead to crc is not matched*/
+ 	/*bit5: 0->enable clk gate, 1->disable clk gate*/
+ 	if (is_aml_s6())
+@@ -3317,7 +3338,53 @@ static int dv_core3_set
+ 	    !(dolby_vision_flags & FLAG_DISABLE_CRC))
+ 		VSYNC_WR_DV_REG(CORE3_CRC_CTRL, 1);
+ 	/* enable core3 */
+-	VSYNC_WR_DV_REG(CORE3_SWAP_CTRL0, (amdv_enable << 0));
++	if (is_aml_s6()) {
++		int core3_idx = (slice_idx >= 0 && slice_idx < 4) ?
++			slice_idx : 0;
++
++		if (READ_ONCE(s6_dv_core3_transition_only)) {
++			u32 swap_ctrl0 = READ_VPP_DV_REG(CORE3_SWAP_CTRL0);
++			bool skip_mismatch =
++				s6_dv_core3_skip_mismatch[core3_idx];
++			bool force_swap_write = s6_core3_transition ||
++				s6_dv_core3_last_enable[core3_idx] < 0 ||
++				s6_dv_core3_last_enable[core3_idx] !=
++					!!amdv_enable;
++
++			s6_dv_core3_swap_readback = swap_ctrl0;
++			s6_dv_core3_clkgate_readback =
++				READ_VPP_DV_REG(CORE3_CLKGATE_CTRL);
++
++			/* Readback observes the previous vsync, not the queued write. */
++			s6_dv_core3_skip_mismatch[core3_idx] = false;
++			if (!s6_core3_transition && !skip_mismatch &&
++			    s6_dv_core3_last_enable[core3_idx] >= 0 &&
++			    !!(swap_ctrl0 & 1) !=
++				s6_dv_core3_last_enable[core3_idx]) {
++				s6_dv_core3_swap_mismatches++;
++				force_swap_write = true;
++			}
++
++			if (force_swap_write) {
++				VSYNC_WR_DV_REG(CORE3_SWAP_CTRL0,
++					(amdv_enable << 0));
++				s6_dv_core3_last_enable[core3_idx] =
++					!!amdv_enable;
++				s6_dv_core3_skip_mismatch[core3_idx] = true;
++				s6_dv_core3_swap_writes++;
++				if (s6_core3_transition)
++					s6_dv_core3_swap_transitions++;
++			} else {
++				s6_dv_core3_swap_skips++;
++			}
++		} else {
++			s6_dv_core3_last_enable[core3_idx] = -1;
++			s6_dv_core3_skip_mismatch[core3_idx] = false;
++			VSYNC_WR_DV_REG(CORE3_SWAP_CTRL0, (amdv_enable << 0));
++		}
++	} else {
++		VSYNC_WR_DV_REG(CORE3_SWAP_CTRL0, (amdv_enable << 0));
++	}
+ 	return 0;
+ }
+ 
+@@ -6513,6 +6580,29 @@ MODULE_PARM_DESC(dv_ll_output_mode, "\n dv_ll_output_mode\n");
+ module_param(force_update_reg, uint, 0664);
+ MODULE_PARM_DESC(force_update_reg, "\n force_update_reg\n");
+ 
++module_param(s6_dv_core3_transition_only, bool, 0664);
++MODULE_PARM_DESC(s6_dv_core3_transition_only,
++	"skip redundant S6 Core3 SWAP_CTRL0 writes between transitions");
++
++module_param(s6_dv_core3_swap_writes, uint, 0444);
++MODULE_PARM_DESC(s6_dv_core3_swap_writes,
++	"S6 Core3 transition-only SWAP_CTRL0 writes");
++module_param(s6_dv_core3_swap_skips, uint, 0444);
++MODULE_PARM_DESC(s6_dv_core3_swap_skips,
++	"S6 Core3 transition-only SWAP_CTRL0 skips");
++module_param(s6_dv_core3_swap_transitions, uint, 0444);
++MODULE_PARM_DESC(s6_dv_core3_swap_transitions,
++	"S6 Core3 transition-triggered SWAP_CTRL0 writes");
++module_param(s6_dv_core3_swap_mismatches, uint, 0444);
++MODULE_PARM_DESC(s6_dv_core3_swap_mismatches,
++	"S6 Core3 enable readback mismatches");
++module_param(s6_dv_core3_swap_readback, uint, 0444);
++MODULE_PARM_DESC(s6_dv_core3_swap_readback,
++	"last S6 Core3 SWAP_CTRL0 hardware readback");
++module_param(s6_dv_core3_clkgate_readback, uint, 0444);
++MODULE_PARM_DESC(s6_dv_core3_clkgate_readback,
++	"last S6 Core3 CLKGATE_CTRL hardware readback");
++
+ module_param(bypass_core1a_composer, uint, 0664);
+ MODULE_PARM_DESC(bypass_core1a_composer, "\n bypass_core1a_composer\n");
+ 

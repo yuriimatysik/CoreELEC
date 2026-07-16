@@ -1,8 +1,15 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Fri, 17 Jul 2026 02:06:59 +0300
+Subject: [PATCH 2/9] amdv: trace S6 frame metadata latch
+
+
 diff --git a/drivers/media/enhancement/amdolby_vision/amdv.c b/drivers/media/enhancement/amdolby_vision/amdv.c
-index 9667be481..b312f17cb 100644
+index 53a97e1c6..0aabeac63 100644
 --- a/drivers/media/enhancement/amdolby_vision/amdv.c
 +++ b/drivers/media/enhancement/amdolby_vision/amdv.c
-@@ -502,5 +502,59 @@ MODULE_PARM_DESC(s6_dv_trace_frames,
+@@ -502,6 +502,60 @@ module_param(s6_dv_trace_frames, uint, 0664);
+ MODULE_PARM_DESC(s6_dv_trace_frames,
  	"number of S6 DV display-vsync CRC samples to log");
  
 +static u32 s6_dv_meta_hash(u32 hash, const void *data, size_t size)
@@ -62,15 +69,15 @@ index 9667be481..b312f17cb 100644
  static unsigned int debug_dolby_frame = 0xffff;
  module_param(debug_dolby_frame, uint, 0664);
  MODULE_PARM_DESC(debug_dolby_frame, "\n debug_dolby_frame\n");
-@@ -11003,6 +11057,7 @@ int amdv_control_path(struct vframe_s *vf, struct vframe_s *vf_2,
+@@ -11131,6 +11185,7 @@ int amdv_control_path(struct vframe_s *vf, struct vframe_s *vf_2,
  
  	if (flag >= 0) {
  		update_stb_core_setting_flag(flag);
 +		s6_dv_trace_setting("gen", vf, &new_m_dovi_setting);
  		if (debug_dolby & 2)
  			pr_dv_dbg
- 			("ll_enable=%d,diagnostic=%d,ll_policy=%d\n",
-@@ -13673,6 +13728,7 @@ static int amdolby_vision_process_v2_stb
+ 				("ll_enable=%d,diagnostic=%d,ll_policy=%d\n",
+@@ -13803,6 +13858,7 @@ static int amdolby_vision_process_v2_stb
  				 in_size,
  				 in_size_2,
  				 pps_state);

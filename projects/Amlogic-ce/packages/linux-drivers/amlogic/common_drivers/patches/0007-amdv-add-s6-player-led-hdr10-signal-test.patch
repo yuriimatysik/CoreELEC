@@ -1,0 +1,86 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Fri, 17 Jul 2026 02:23:48 +0300
+Subject: [PATCH 7/9] amdv: add S6 player-led HDR10 signal test
+
+
+diff --git a/drivers/media/enhancement/amdolby_vision/amdv.c b/drivers/media/enhancement/amdolby_vision/amdv.c
+index f38052378..8b41b752f 100644
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -238,11 +238,22 @@ module_param(s6_dv_ll_vsif_signal_off, bool, 0664);
+ MODULE_PARM_DESC(s6_dv_ll_vsif_signal_off,
+ 	"diagnostic: clear S6 Player-led Dolby Vision signal in HDMI VSIF");
+ 
++/*
++ * Diagnostic only: keep the S6 Player-led Dolby pixel path, Core3 mode and
++ * YUV422/12-bit transport, but advertise the resulting pixels as HDR10.
++ * Disabled by default.
++ */
++static bool s6_dv_ll_hdr10_signal;
++module_param(s6_dv_ll_hdr10_signal, bool, 0664);
++MODULE_PARM_DESC(s6_dv_ll_hdr10_signal,
++	"diagnostic: signal S6 Player-led Dolby pixels as HDMI HDR10");
++
+ static void s6_dv_ll_maybe_clear_vsif_signal(struct dv_vsif_para *vsif,
+ 					      bool dovi_ll_enable)
+ {
+-	if (!READ_ONCE(s6_dv_ll_vsif_signal_off) || !is_aml_s6() ||
+-	    !dovi_ll_enable || !vsif)
++	if ((!READ_ONCE(s6_dv_ll_vsif_signal_off) &&
++	     !READ_ONCE(s6_dv_ll_hdr10_signal)) ||
++	    !is_aml_s6() || !dovi_ll_enable || !vsif)
+ 		return;
+ 
+ 	if (vsif->ver2_l11_flag)
+@@ -253,6 +264,34 @@ static void s6_dv_ll_maybe_clear_vsif_signal(struct dv_vsif_para *vsif,
+ 	pr_info_once("S6 DV diagnostic: Player-led VSIF signal disabled\n");
+ }
+ 
++static void s6_dv_ll_maybe_send_hdr10_signal(const struct vinfo_s *vinfo,
++					       bool dovi_ll_enable)
++{
++	struct master_display_info_s hdr = {0};
++
++	if (!READ_ONCE(s6_dv_ll_hdr10_signal) || !is_aml_s6() ||
++	    !dovi_ll_enable || !vinfo || !vinfo->vout_device ||
++	    !vinfo->vout_device->fresh_tx_hdr_pkt)
++		return;
++
++	/* Same HDR10 feature word used by the normal FORMAT_HDR10 path. */
++	hdr.features =
++		  (1 << 29) /* video available */
++		| (5 << 26) /* unspecified */
++		| (0 << 25) /* limit */
++		| (1 << 24) /* color available */
++		| (9 << 16) /* BT.2020 primaries */
++		| (0x10 << 8) /* SMPTE ST 2084 */
++		| (10 << 0); /* BT.2020 constant luminance */
++
++	/* Must follow VSIF: the HDR callback clears DV signaling, then writes
++	 * the final DRM and AVI BT.2020 state. Zero static metadata is adequate
++	 * for this diagnostic A/B.
++	 */
++	vinfo->vout_device->fresh_tx_hdr_pkt(&hdr);
++	pr_info_once("S6 DV diagnostic: Player-led pixels signaled as HDR10\n");
++}
++
+ u32 last_dolby_vision_ll_policy = DOLBY_VISION_LL_DISABLE;
+ 
+ #ifdef V2_4_3
+@@ -7331,6 +7370,7 @@ static bool send_hdmi_pkt
+ #endif
+ 			}
+ 		}
++		s6_dv_ll_maybe_send_hdr10_signal(vinfo, dovi_ll_enable);
+ 		if (last_dst_format != FORMAT_DOVI ||
+ 		    (dolby_vision_flags & FLAG_FORCE_HDMI_PKT))
+ 			pr_dv_dbg("send hdmi pkt: %s\n",
+@@ -7494,6 +7534,7 @@ static void send_hdmi_pkt_ahead
+ 					? YUV422_BIT12 : RGB_8BIT, &vsif,
+ 					false);
+ 		}
++		s6_dv_ll_maybe_send_hdr10_signal(vinfo, dovi_ll_enable);
+ 		pr_dv_dbg("send_hdmi_pkt ahead: %s\n",
+ 			     dovi_ll_enable ? "LL" : "DV");
+ 	}

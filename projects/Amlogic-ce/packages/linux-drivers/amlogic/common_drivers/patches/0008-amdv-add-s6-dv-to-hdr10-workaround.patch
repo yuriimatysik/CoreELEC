@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Fri, 17 Jul 2026 02:24:07 +0300
+Subject: [PATCH 8/9] amdv: add S6 DV-to-HDR10 workaround
+
+
+diff --git a/drivers/media/enhancement/amdolby_vision/amdv.c b/drivers/media/enhancement/amdolby_vision/amdv.c
+index 8b41b752f..769252308 100644
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -248,6 +248,11 @@ module_param(s6_dv_ll_hdr10_signal, bool, 0664);
+ MODULE_PARM_DESC(s6_dv_ll_hdr10_signal,
+ 	"diagnostic: signal S6 Player-led Dolby pixels as HDMI HDR10");
+ 
++static bool s6_dv_force_hdr10;
++module_param(s6_dv_force_hdr10, bool, 0664);
++MODULE_PARM_DESC(s6_dv_force_hdr10,
++	"workaround: convert S6 STB Dolby Vision input to real HDR10 output");
++
+ static void s6_dv_ll_maybe_clear_vsif_signal(struct dv_vsif_para *vsif,
+ 					      bool dovi_ll_enable)
+ {
+@@ -4908,6 +4913,20 @@ int amdv_policy_process(struct vframe_s *vf, int *mode,
+ 	}
+ 	if (!dolby_vision_enable || (!p_funcs_stb && !p_funcs_tv))
+ 		return mode_change;
++	if (READ_ONCE(s6_dv_force_hdr10) && is_aml_s6() &&
++	    is_amdv_stb_mode() &&
++	    (dolby_vision_policy == AMDV_FOLLOW_SOURCE ||
++	     dolby_vision_policy == AMDV_FOLLOW_SINK) &&
++	    (src_format == FORMAT_DOVI || src_format == FORMAT_DOVI_LL)) {
++		const struct vinfo_s *vinfo = get_current_vinfo();
++
++		if (vinfo && sink_support_hdr(vinfo)) {
++			*mode = AMDV_OUTPUT_MODE_HDR10;
++			mode_change = dolby_vision_mode != *mode;
++			pr_info_once("S6 DV workaround: converting Dolby Vision input to HDR10 output\n");
++			return mode_change;
++		}
++	}
+ 
+ 	if (multi_dv_mode) {
+ 		if (is_aml_tvmode())

@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Fri, 17 Jul 2026 02:23:30 +0300
+Subject: [PATCH 6/9] amdv: add S6 player-led VSIF signal test
+
+
+diff --git a/drivers/media/enhancement/amdolby_vision/amdv.c b/drivers/media/enhancement/amdolby_vision/amdv.c
+index 81d05c2ad..f38052378 100644
+--- a/drivers/media/enhancement/amdolby_vision/amdv.c
++++ b/drivers/media/enhancement/amdolby_vision/amdv.c
+@@ -227,6 +227,32 @@ u32 dolby_vision_ll_policy = DOLBY_VISION_LL_DISABLE;
+ module_param(dolby_vision_ll_policy, uint, 0664);
+ MODULE_PARM_DESC(dolby_vision_ll_policy, "\n dolby_vision_ll_policy\n");
+ 
++/*
++ * Diagnostic only: keep the S6 Player-led Dolby pixel path and YUV422
++ * transport intact, but clear the Dolby Vision signal field in the HDMI
++ * VSIF. This separates a sink reaction to DV signaling from corruption in
++ * the Dolby pixel pipeline. Disabled by default.
++ */
++static bool s6_dv_ll_vsif_signal_off;
++module_param(s6_dv_ll_vsif_signal_off, bool, 0664);
++MODULE_PARM_DESC(s6_dv_ll_vsif_signal_off,
++	"diagnostic: clear S6 Player-led Dolby Vision signal in HDMI VSIF");
++
++static void s6_dv_ll_maybe_clear_vsif_signal(struct dv_vsif_para *vsif,
++					      bool dovi_ll_enable)
++{
++	if (!READ_ONCE(s6_dv_ll_vsif_signal_off) || !is_aml_s6() ||
++	    !dovi_ll_enable || !vsif)
++		return;
++
++	if (vsif->ver2_l11_flag)
++		vsif->vers.ver2_l11.dobly_vision_signal = 0;
++	else
++		vsif->vers.ver2.dobly_vision_signal = 0;
++
++	pr_info_once("S6 DV diagnostic: Player-led VSIF signal disabled\n");
++}
++
+ u32 last_dolby_vision_ll_policy = DOLBY_VISION_LL_DISABLE;
+ 
+ #ifdef V2_4_3
+@@ -7268,6 +7294,7 @@ static bool send_hdmi_pkt
+ 			dovi_ll_enable = dovi_setting.dovi_ll_enable;
+ 			diagnostic_enable = dovi_setting.diagnostic_enable;
+ 		}
++		s6_dv_ll_maybe_clear_vsif_signal(&vsif, dovi_ll_enable);
+ 
+ 		if (vinfo && vinfo->vout_device &&
+ 		    vinfo->vout_device->fresh_tx_vsif_pkt) {
+@@ -7449,6 +7476,7 @@ static void send_hdmi_pkt_ahead
+ 		vsif.vers.ver2.auxiliary_runmode = 0;
+ 		vsif.vers.ver2.auxiliary_runversion = 0;
+ 		vsif.vers.ver2.auxiliary_debug0 = 0;
++		s6_dv_ll_maybe_clear_vsif_signal(&vsif, dovi_ll_enable);
+ 
+ 		if (vinfo && vinfo->vout_device &&
+ 			vinfo->vout_device->fresh_tx_vsif_pkt) {
