@@ -461,3 +461,66 @@ may fix the perceived interpolation/cadence defect and must be tested first.
 True DV still smearing at a verified fixed 60 Hz would remain a separate S6
 target-DOVI pixel-path defect; it cannot be assigned to the C5 from public
 evidence alone.
+
+### Upstream refresh and next discriminator (2026-07-25)
+
+The experiment branch was rebased from the July 17 base onto CoreELEC
+`coreelec-22` commit `678de76d75ebad2046c82db275273584c8a1e613`
+(2026-07-23). The fork's old `coreelec-22` tracking ref is behind this official
+upstream; it is not an alternative newer base.
+
+Two upstream changes are directly relevant enough to justify one new build:
+
+* `common_drivers` now points to
+  [`6e10fef9`](https://github.com/CoreELEC/common_drivers/commit/6e10fef9b78b48060e86ea97a40eb35ddc23b0ca).
+  Its HDMI DRM decision path checks the active Dolby state and LL policy before
+  choosing the link format: TV-led gets YUV444 8-bit and player-led gets YUV422
+  12-bit. This fixes a real ordering defect where the initial decision could
+  still use the SDR EOTF and select the wrong base format. It can affect
+  transmitted pixels, black screens and post-refresh-switch state, but does not
+  by itself prove that the S6 Dolby processing smear is fixed.
+* Kodi now points to
+  [`61a36a48`](https://github.com/CoreELEC/xbmc/commit/61a36a4894fffe179288bcc2fda98e94b84e51aa).
+  `FRAC_RATE_POLICY`, `MODE_ID` and CRTC activation are committed together in
+  one DRM atomic request instead of changing fractional policy separately.
+  This removes an avoidable second mode transition and is relevant to cadence,
+  HDMI blackout and stale-format symptoms.
+
+All nine local `common_drivers` experimental patches were applied with
+`git apply --check` to a clean `6e10fef9` tree; the resulting source passes
+`git diff --check`. The local Kodi AFR-off DV modeset patch also applies cleanly
+to `61a36a48`. No patch regeneration or speculative compatibility edit is
+needed.
+
+Before another kernel experiment, run one TV-side discriminator that closely
+matches independent LG external-HDMI evidence: in the active Dolby Vision
+picture mode set LG **Noise Reduction** to **Off** (not Auto or Low), keep MPEG
+Noise Reduction and Smooth Gradation off, fully disconnect any Bluetooth audio
+device from the TV, then reopen the known true-DV scene.
+An [LG G3/Apple TV report](https://www.reddit.com/r/LGOLED/comments/1d1be2r/ghosting/)
+describes moving-object ghosting in external HDR/DV while SDR and the internal
+app were clean; disabling LG Noise Reduction resolved it for multiple users.
+An independent [LG C2 report](https://forum.webostv.developer.lge.com/t/dolby-vision-out-of-sync-through-hdmi-with-bluetooth-audio-connected-to-tv/14291)
+found delayed DV brightness metadata and moving-object outlines only with HDMI
+DV plus Bluetooth audio; webOS DV, HDMI HDR10 and HDMI DV after disconnecting
+Bluetooth were clean. Neither report proves that the C5 has the same issue, but
+both are closer symptom matches than another undocumented S6 register knob.
+
+The new-build test is intentionally short:
+
+1. Clear all runtime experiments, including `s6_dv_force_hdr10=0`; verify fixed
+   refresh (`vrr_mode=none`) and the expected TV-led or player-led HDMI format.
+2. Reopen the same true-DV scene once with LG Noise Reduction off and score
+   smear and sluggish cadence separately.
+3. If both remain, stop playback, enable only
+   `s6_dv_core3_transition_only=1`, reopen the same scene once and record its
+   counters.
+4. If Core3 has no visual effect, capture the already-defined three-register
+   RDMA trace. With correct order and no overflow, stop open-source knob
+   testing: the remaining defect is below the available target-DOVI setup
+   layer, most plausibly the closed S6 Dolby implementation or its hardware
+   programming tables.
+
+The previously decisive same-stream DV-input-to-HDR10 control remains valid and
+must not be repeated: true HDMI HDR10 at 2160p60 was clean while true HDMI Dolby
+Vision at 2160p60 smeared and felt sluggish.
